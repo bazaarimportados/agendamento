@@ -138,6 +138,7 @@ label.f textarea{min-height:64px;resize:vertical}
     <p>Arraste o arquivo .xlsx aqui ou toque para escolher. A leitura acontece só neste aparelho.</p>
   </label>
 
+  <p style="text-align:center;margin-top:14px"><button class="mini-drop" id="cfgDrop" type="button">Ou conectar o Google Sheets</button></p>
   <div class="who" id="who" hidden>Você é <input id="me" placeholder="Seu nome" autocomplete="given-name"><span class="hint" id="syncHint"></span></div>
   <div class="app" id="app" hidden>
     <section class="panel" aria-label="Clientes">
@@ -164,6 +165,7 @@ label.f textarea{min-height:64px;resize:vertical}
 <style>
 #bLink{display:none!important}
 #gate{position:fixed;inset:0;z-index:50;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:24px}
+#gate[hidden]{display:none}
 #gate .box{max-width:380px;width:100%;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:28px 24px;text-align:center}
 #gate .brand{margin-bottom:6px}
 #gate h2{margin:0 0 8px;font-size:22px;font-weight:600}
@@ -607,6 +609,7 @@ var ASSETS={bg:"data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAlgCWAAD/2wBDAAYEBAUEB
       if(u){ u.id().then(function(i){uid=i}); if(!myName()) u.me().then(function(p){ if(p&&p.name&&!myName()){ $('me').value=p.name.split(' ')[0]; try{localStorage.setItem(ME_KEY,myName())}catch(e){} } }); }
       if(state.sheet) subscribe();
       watchTeamSheet();
+      watchConfig();
     });
   })();
 
@@ -654,8 +657,10 @@ var ASSETS={bg:"data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAlgCWAAD/2wBDAAYEBAUEB
     var keepSel=state.sheet===name?state.sel:null;
     state.clients=cl;
     if(state.sheet!==name){ state.sheet=name; subscribe(); }
-    state.edits={}; state.sel=state.clients.some(function(c){return c.name===keepSel})?keepSel:null;
-    drop.hidden=true; $('app').hidden=false; $('privacy').hidden=false; $('who').hidden=false;
+    var oldEd=state.edits||{}; state.edits={};
+    cl.forEach(function(c){ var e0=oldEd[c.name]; if(e0&&e0.sig===sigOf(c)) state.edits[c.name]=e0; });
+    state.sel=state.clients.some(function(c){return c.name===keepSel})?keepSel:null;
+    drop.hidden=true; if($('cfgDrop')) $('cfgDrop').parentNode.hidden=true; $('app').hidden=false; $('privacy').hidden=false; $('who').hidden=false;
     renderSheetInfo();
     $('tab-lib').textContent='Liberadas ('+state.clients.filter(function(c){return c.liberada}).length+')';
     $('tab-all').textContent='Todas ('+state.clients.length+')';
@@ -663,6 +668,7 @@ var ASSETS={bg:"data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAlgCWAAD/2wBDAAYEBAUEB
     if(state.sel) renderDetail(); else $('detail').innerHTML='<div class="empty">Escolha uma cliente na lista para montar o PDF.</div>';
   }
 
+  function sigOf(c){ return c.items.map(function(i){return i.name+'|'+i.value+'|'+i.conf+'|'+(i.atraso?1:0)}).join('~')+'#'+c.frete+'#'+c.endereco }
   function renderSheetInfo(){
     var si=$('sheetinfo'); si.hidden=false;
     var m=state.teamMeta, html='';
@@ -674,10 +680,67 @@ var ASSETS={bg:"data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAlgCWAAD/2wBDAAYEBAUEB
     }
     if(m&&m.v===teamVer) html+='<span id="shareMsg">Enviada'+(m.por?' por '+esc(m.por):'')+' em '+fmtWhen(m.em)+'</span> ';
     else html+='<span id="shareMsg">'+esc(state.shareMsg||'')+'</span> ';
-    html+='<button class="mini-drop" id="reload">Atualizar planilha</button>';
+    if(cfg.sheetUrl){
+      html+='<br><span>Atualiza sozinha pelo Google Sheets a cada hora</span> <button class="mini-drop" id="autoNow">Atualizar agora</button> <button class="mini-drop" id="cfgSheets">Trocar link</button>';
+    } else {
+      html+='<button class="mini-drop" id="reload">Atualizar planilha</button> <button class="mini-drop" id="cfgSheets">Conectar Google Sheets</button>';
+    }
     si.innerHTML=html;
+    if($('autoNow')) $('autoNow').onclick=function(){autoCheck(true)};
+    $('cfgSheets').onclick=configSheets;
     if($('sheetSel')) $('sheetSel').onchange=function(){loadSheet(this.value)};
-    $('reload').onclick=function(){file.value='';file.click()};
+    if($('reload')) $('reload').onclick=function(){file.value='';file.click()};
+  }
+
+  // ---- atualização automática pelo Google Sheets ----
+  var cfg={}, autoTimer=null, autoBusy=false, HOUR=60*60*1000;
+  function configSheets(){
+    var u=prompt('Cole o link da planilha publicada na web (Google Sheets → Arquivo → Compartilhar → Publicar na Web → formato Microsoft Excel .xlsx). Deixe vazio para desligar.', cfg.sheetUrl||'');
+    if(u===null) return;
+    u=u.trim();
+    if(u&&!/^https:\/\/docs\.google\.com\/spreadsheets\//.test(u)){ alert('Esse não parece um link do Google Sheets publicado.'); return; }
+    if(u&&/\/pubhtml/.test(u)) u=u.replace('/pubhtml','/pub');
+    if(u&&/\/pub(\?|$)/.test(u)&&!/output=xlsx/.test(u)) u=u.replace(/output=[a-z]+/,'').replace(/[?&]+$/,'')+(u.indexOf('?')>-1?'&':'?')+'output=xlsx';
+    if(!db){ cfg.sheetUrl=u; scheduleAuto(true); return; }
+    db.doc('equipe/config').set({sheetUrl:u,por:myName(),em:Date.now()}).then(function(){ if(u) autoCheck(true) },function(e){ alert('Não consegui salvar ('+(e&&e.code||'erro')+').') });
+  }
+  function watchConfig(){
+    db.doc('equipe/config').onSnapshot(function(s){
+      var had=cfg.sheetUrl; cfg=s.exists?s.data():{};
+      if(state.clients.length) renderSheetInfo();
+      updateDropCfg();
+      if(had!==cfg.sheetUrl) scheduleAuto();
+    },function(){});
+  }
+  function updateDropCfg(){
+    var b=$('cfgDrop'); if(!b) return;
+    b.textContent=cfg.sheetUrl?'Buscar agora no Google Sheets':'Ou conectar o Google Sheets';
+  }
+  function scheduleAuto(){
+    if(autoTimer){ clearInterval(autoTimer); autoTimer=null }
+    if(!cfg.sheetUrl) return;
+    autoTimer=setInterval(function(){autoCheck(false)},5*60*1000);
+    setTimeout(function(){autoCheck(false)},1500);
+  }
+  function autoCheck(force){
+    if(!cfg.sheetUrl||autoBusy) return;
+    var m=state.teamMeta;
+    if(!force&&m&&m.em&&Date.now()-m.em<HOUR) return;
+    autoBusy=true; setShareMsg('Buscando a planilha no Google Sheets…');
+    if(!state.clients.length){ drop.querySelector('strong').textContent='Buscando a planilha no Google Sheets…'; }
+    fetch(cfg.sheetUrl,{cache:'no-store'}).then(function(r){ if(!r.ok) throw new Error('erro '+r.status); return r.arrayBuffer() })
+      .then(function(buf){
+        var wb=XLSX.read(new Uint8Array(buf),{type:'array',cellFormula:false,cellHTML:false,cellText:false});
+        var names=wb.SheetNames, cur=state.sheet||(m&&m.aba);
+        var pick=(cur&&names.indexOf(cur)>-1)?cur:(names.find(function(n){return /^\s*BR\b/i.test(n)})||names[0]);
+        state.wb=wb; state.fileName='Google Sheets';
+        loadSheet(pick);
+      })
+      .catch(function(e){
+        setShareMsg('Não consegui buscar no Google Sheets ('+(e&&e.message||e)+'). Confira se a planilha está publicada na web.');
+        if(!state.clients.length) resetDrop();
+      })
+      .then(function(){ autoBusy=false });
   }
   function setShareMsg(s){ state.shareMsg=s; var e=$('shareMsg'); if(e) e.textContent=s; }
 
@@ -731,13 +794,14 @@ var ASSETS={bg:"data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAlgCWAAD/2wBDAAYEBAUEB
   }
 
   function setTab(t){state.tab=t;$('tab-lib').setAttribute('aria-selected',t==='lib');$('tab-all').setAttribute('aria-selected',t==='all');renderList()}
+  $('cfgDrop').onclick=function(){ if(cfg.sheetUrl) autoCheck(true); else configSheets(); };
   $('tab-lib').onclick=function(){setTab('lib')};
   $('tab-all').onclick=function(){setTab('all')};
   $('q').oninput=renderList; $('hideSent').onchange=renderList;
 
   function edit(c){
     if(!state.edits[c.name]){
-      state.edits[c.name]={items:c.items.map(function(i){return {name:i.name,value:i.value,conf:i.conf,atraso:i.atraso,include:i.include}}),frete:c.frete,creditoExtra:0,endereco:c.endereco,month:c.month};
+      state.edits[c.name]={sig:sigOf(c),items:c.items.map(function(i){return {name:i.name,value:i.value,conf:i.conf,atraso:i.atraso,include:i.include}}),frete:c.frete,creditoExtra:0,endereco:c.endereco,month:c.month};
     }
     return state.edits[c.name];
   }
