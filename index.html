@@ -208,13 +208,19 @@ label.f textarea{min-height:64px;resize:vertical}
     g.querySelector('#gOut').onclick=function(){ auth.signOut() };
   }
   auth.onAuthStateChanged(function(u){
-    if(!u){ showLogin(); return; }
+    if(!u){
+      gate('<h2>Pedidos que chegaram</h2><p>Abrindo…</p>');
+      auth.signInAnonymously().catch(function(e){
+        gate('<h2>Não foi possível abrir</h2><p>Erro: '+(e&&e.code||'erro')+'. Confira se o acesso “Anônimo” está ativado no Firebase (Authentication → Método de login).</p>');
+      });
+      return;
+    }
     fs.doc('equipe/planilha').get().then(function(){
       var g=document.getElementById('gate'); if(g) g.hidden=true;
-      if(!document.getElementById('logout')){ var b=document.createElement('button'); b.id='logout'; b.textContent='Sair ('+(u.email||'')+')'; b.onclick=function(){ auth.signOut().then(function(){location.reload()}) }; document.body.appendChild(b); }
+      if(false){ var b=document.createElement('button'); b.id='logout'; b.textContent='Sair ('+(u.email||'')+')'; b.onclick=function(){ auth.signOut().then(function(){location.reload()}) }; document.body.appendChild(b); }
       readyResolve(u);
     },function(e){
-      if(e&&e.code==='permission-denied') noAccess(u.email); else showLogin('Erro ao conectar ('+(e&&e.code||'erro')+').');
+      gate('<h2>Não foi possível abrir</h2><p>Erro: '+(e&&e.code||'erro')+'. Confira as regras do Firestore.</p>');
     });
   });
 
