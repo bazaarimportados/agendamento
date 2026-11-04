@@ -695,10 +695,11 @@ var ASSETS={bg:"data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAlgCWAAD/2wBDAAYEBAUEB
   // ---- atualização automática pelo Google Sheets ----
   var cfg={}, autoTimer=null, autoBusy=false, HOUR=60*60*1000;
   function configSheets(){
-    var u=prompt('Cole o link da planilha publicada na web (Google Sheets → Arquivo → Compartilhar → Publicar na Web → formato Microsoft Excel .xlsx). Deixe vazio para desligar.', cfg.sheetUrl||'');
+    var u=prompt('Cole o link da planilha do Google Sheets (compartilhada como “Qualquer pessoa com o link”). Deixe vazio para desligar.', cfg.sheetUrl||'');
     if(u===null) return;
     u=u.trim();
-    if(u&&!/^https:\/\/docs\.google\.com\/spreadsheets\//.test(u)){ alert('Esse não parece um link do Google Sheets publicado.'); return; }
+    if(u&&!/^https:\/\/(docs\.google\.com\/spreadsheets\/|script\.google\.com\/)/.test(u)){ alert('Esse não parece um link do Google Sheets. Ele começa com https://docs.google.com/spreadsheets/'); return; }
+    if(u&&/script\.google\.com/.test(u)&&!/\/exec(\?|$)/.test(u)){ alert('Use o link do “App da Web”, que termina em /exec (não o link do editor).'); return; }
     if(u&&/\/pubhtml/.test(u)) u=u.replace('/pubhtml','/pub');
     if(u&&/\/pub(\?|$)/.test(u)&&!/output=xlsx/.test(u)) u=u.replace(/output=[a-z]+/,'').replace(/[?&]+$/,'')+(u.indexOf('?')>-1?'&':'?')+'output=xlsx';
     if(!db){ cfg.sheetUrl=u; scheduleAuto(true); return; }
@@ -728,16 +729,34 @@ var ASSETS={bg:"data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAlgCWAAD/2wBDAAYEBAUEB
     if(!force&&m&&m.em&&Date.now()-m.em<HOUR) return;
     autoBusy=true; setShareMsg('Buscando a planilha no Google Sheets…');
     if(!state.clients.length){ drop.querySelector('strong').textContent='Buscando a planilha no Google Sheets…'; }
-    fetch(cfg.sheetUrl,{cache:'no-store'}).then(function(r){ if(!r.ok) throw new Error('erro '+r.status); return r.arrayBuffer() })
+    var cur0=state.sheet||(m&&m.aba)||'';
+    var isScript=/script\.google\.com/.test(cfg.sheetUrl);
+    var gid=(cfg.sheetUrl.match(/\/spreadsheets\/d\/(?!e\/)([A-Za-z0-9_-]+)/)||[])[1];
+    var url=gid?'https://docs.google.com/spreadsheets/d/'+gid+'/gviz/tq?tqx=out:csv&headers=0'+(cur0?'&sheet='+encodeURIComponent(cur0):'')+'&t='+Date.now():isScript?cfg.sheetUrl+(cfg.sheetUrl.indexOf('?')>-1?'&':'?')+'aba='+encodeURIComponent(cur0)+'&t='+Date.now():cfg.sheetUrl;
+    fetch(url,{cache:'no-store',redirect:'follow'}).then(function(r){ if(!r.ok) throw new Error('erro '+r.status); return (isScript||gid)?r.text():r.arrayBuffer() })
       .then(function(buf){
-        var wb=XLSX.read(new Uint8Array(buf),{type:'array',cellFormula:false,cellHTML:false,cellText:false});
-        var names=wb.SheetNames, cur=state.sheet||(m&&m.aba);
+        var wb;
+        if(gid){
+          if(/^\s*</.test(buf)||/google\.visualization/.test(buf.slice(0,300))) throw new Error('a planilha não está compartilhada como “Qualquer pessoa com o link”');
+          var w2=XLSX.read(buf,{type:'string'});
+          var nm=cur0||'BR - '+(new Date().toLocaleString('pt-BR',{month:'long'})).toUpperCase();
+          var sh2={}; sh2[nm]=w2.Sheets[w2.SheetNames[0]];
+          wb={SheetNames:[nm],Sheets:sh2};
+        } else if(isScript){
+          var j; try{ j=JSON.parse(buf) }catch(x){ throw new Error('o Apps Script não respondeu certo — confira se “Quem pode acessar” está como Qualquer pessoa') }
+          if(!j||!j.valores) throw new Error(j&&j.erro||'resposta vazia');
+          var sh={}; sh[j.aba]=XLSX.utils.aoa_to_sheet(j.valores);
+          wb={SheetNames:[j.aba],Sheets:sh};
+        } else {
+          wb=XLSX.read(new Uint8Array(buf),{type:'array',cellFormula:false,cellHTML:false,cellText:false});
+        }
+        var names=wb.SheetNames, cur=cur0;
         var pick=(cur&&names.indexOf(cur)>-1)?cur:(names.find(function(n){return /^\s*BR\b/i.test(n)})||names[0]);
         state.wb=wb; state.fileName='Google Sheets';
         loadSheet(pick);
       })
       .catch(function(e){
-        setShareMsg('Não consegui buscar no Google Sheets ('+(e&&e.message||e)+'). Confira se a planilha está publicada na web.');
+        setShareMsg('Não consegui buscar no Google Sheets ('+(e&&e.message||e)+').');
         if(!state.clients.length) resetDrop();
       })
       .then(function(){ autoBusy=false });
